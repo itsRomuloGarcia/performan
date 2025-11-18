@@ -3,13 +3,15 @@
 // =============================================
 const CONFIG = {
   API_BASE_URL: "/api/cnpj",
-  DEBOUNCE_DELAY: 300,
-  REQUEST_TIMEOUT: 15000,
-  MAX_RETRIES: 1
+  DEBOUNCE_DELAY: 500,
+  REQUEST_TIMEOUT: 30000,
+  MAX_RETRIES: 2,
+  RETRY_DELAY: 1000,
+  MAX_SEARCH_HISTORY: 50
 };
 
 // =============================================
-// VALIDAÇÃO DE CNPJ (ALGORITMO OFICIAL OTIMIZADO)
+// VALIDAÇÃO DE CNPJ (ALGORITMO OFICIAL)
 // =============================================
 class CNPJValidator {
   static clean(cnpj) {
@@ -18,9 +20,9 @@ class CNPJValidator {
 
   static format(cnpj) {
     const cleaned = this.clean(cnpj);
-    return cleaned.length === 14 ? 
-      cleaned.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5") : 
-      cnpj;
+    if (cleaned.length !== 14) return cnpj;
+    
+    return cleaned.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
   }
 
   static validate(cnpj) {
@@ -31,38 +33,38 @@ class CNPJValidator {
     }
 
     if (/^(\d)\1+$/.test(cleaned)) {
-      return { isValid: false, error: "CNPJ inválido" };
+      return { isValid: false, error: "CNPJ com dígitos repetidos é inválido" };
     }
 
-    // Validação otimizada dos dígitos
-    let sum = 0;
-    let weight = 5;
-    
-    for (let i = 0; i < 12; i++) {
-      sum += parseInt(cleaned[i]) * weight;
-      weight = weight === 2 ? 9 : weight - 1;
-    }
-    
-    let digit = 11 - (sum % 11);
-    if (digit > 9) digit = 0;
-    
-    if (digit !== parseInt(cleaned[12])) {
-      return { isValid: false, error: "CNPJ inválido" };
+    let tamanho = cleaned.length - 2;
+    let numeros = cleaned.substring(0, tamanho);
+    let digitos = cleaned.substring(tamanho);
+    let soma = 0;
+    let pos = tamanho - 7;
+
+    for (let i = tamanho; i >= 1; i--) {
+      soma += numeros.charAt(tamanho - i) * pos--;
+      if (pos < 2) pos = 9;
     }
 
-    sum = 0;
-    weight = 6;
-    
-    for (let i = 0; i < 13; i++) {
-      sum += parseInt(cleaned[i]) * weight;
-      weight = weight === 2 ? 9 : weight - 1;
+    let resultado = soma % 11 < 2 ? 0 : 11 - (soma % 11);
+    if (resultado !== parseInt(digitos.charAt(0))) {
+      return { isValid: false, error: "Dígito verificador inválido" };
     }
-    
-    digit = 11 - (sum % 11);
-    if (digit > 9) digit = 0;
-    
-    if (digit !== parseInt(cleaned[13])) {
-      return { isValid: false, error: "CNPJ inválido" };
+
+    tamanho = tamanho + 1;
+    numeros = cleaned.substring(0, tamanho);
+    soma = 0;
+    pos = tamanho - 7;
+
+    for (let i = tamanho; i >= 1; i--) {
+      soma += numeros.charAt(tamanho - i) * pos--;
+      if (pos < 2) pos = 9;
+    }
+
+    resultado = soma % 11 < 2 ? 0 : 11 - (soma % 11);
+    if (resultado !== parseInt(digitos.charAt(1))) {
+      return { isValid: false, error: "Dígito verificador inválido" };
     }
 
     return { isValid: true, cleaned };
@@ -70,12 +72,182 @@ class CNPJValidator {
 }
 
 // =============================================
-// GERENCIADOR DE ESTADO LEVE
+// GERENCIADOR DE HISTÓRICO DE PESQUISAS
+// =============================================
+class SearchHistoryManager {
+  static STORAGE_KEY = 'cnpj_search_history';
+  static MAX_ITEMS = CONFIG.MAX_SEARCH_HISTORY;
+
+  static getHistory() {
+    try {
+      const history = localStorage.getItem(this.STORAGE_KEY);
+      return history ? JSON.parse(history) : {};
+    } catch (error) {
+      console.error('Erro ao carregar histórico:', error);
+      return {};
+    }
+  }
+
+  static saveToHistory(cnpj, data) {
+    try {
+      const history = this.getHistory();
+      const timestamp = new Date().toISOString();
+      
+      // Adicionar nova pesquisa
+      history[cnpj] = {
+        data: data,
+        timestamp: timestamp,
+        companyName: data.company?.name || 'Nome não disponível'
+      };
+
+      // Manter apenas os MAX_ITEMS mais recentes
+      const entries = Object.entries(history);
+      if (entries.length > this.MAX_ITEMS) {
+        const sorted = entries.sort((a, b) => 
+          new Date(b[1].timestamp) - new Date(a[1].timestamp)
+        );
+        const toKeep = sorted.slice(0, this.MAX_ITEMS);
+        const newHistory = Object.fromEntries(toKeep);
+        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(newHistory));
+      } else {
+        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(history));
+      }
+
+      return true;
+    } catch (error) {
+      console.error('Erro ao salvar no histórico:', error);
+      return false;
+    }
+  }
+
+  static clearHistory() {
+    try {
+      localStorage.removeItem(this.STORAGE_KEY);
+      return true;
+    } catch (error) {
+      console.error('Erro ao limpar histórico:', error);
+      return false;
+    }
+  }
+
+  static getHistoryCount() {
+    const history = this.getHistory();
+    return Object.keys(history).length;
+  }
+
+  static getHistoryList() {
+    const history = this.getHistory();
+    return Object.entries(history).map(([cnpj, item]) => ({
+      cnpj,
+      ...item
+    }));
+  }
+}
+
+// =============================================
+// GERENCIADOR DE EXPORTAÇÃO
+// =============================================
+class ExportManager {
+  static exportToCSV(selections) {
+    if (!selections || selections.length === 0) return null;
+
+    const headers = [
+      'CNPJ', 'Razão Social', 'Nome Fantasia', 'Situação Cadastral', 
+      'Data Abertura', 'Endereço', 'Telefone', 'Email', 'CNAE Principal'
+    ];
+
+    const rows = selections.map(item => {
+      const data = item.data;
+      return [
+        data.taxId || '',
+        data.company?.name || '',
+        data.alias || '',
+        data.status?.text || '',
+        data.founded || '',
+        this.formatAddress(data.address) || '',
+        this.formatPhones(data.phones) || '',
+        this.getPrimaryEmail(data.emails) || '',
+        data.mainActivity?.text || ''
+      ].map(field => `"${field}"`).join(',');
+    });
+
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    return csvContent;
+  }
+
+  static exportToJSON(selections) {
+    const exportData = {
+      exported_at: new Date().toISOString(),
+      total_companies: selections.length,
+      selections: selections.map(item => ({
+        cnpj: item.cnpj,
+        company_name: item.data.company?.name,
+        exported_at: new Date().toISOString()
+      })),
+      data: selections.reduce((acc, item) => {
+        acc[item.cnpj] = item.data;
+        return acc;
+      }, {})
+    };
+
+    return JSON.stringify(exportData, null, 2);
+  }
+
+  static exportToExcel(selections) {
+    // Para Excel, usaremos CSV com extensão .xls para simplicidade
+    // Em uma implementação real, usaria uma biblioteca como SheetJS
+    return this.exportToCSV(selections);
+  }
+
+  static downloadFile(content, filename, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  static formatAddress(address) {
+    if (!address) return '';
+    const parts = [
+      address.street,
+      address.number,
+      address.details,
+      address.district,
+      address.city,
+      address.state
+    ].filter(part => part && part.trim() !== '');
+    return parts.join(', ');
+  }
+
+  static formatPhones(phones) {
+    if (!phones || !Array.isArray(phones)) return '';
+    return phones.map(phone => 
+      phone.area && phone.number ? `(${phone.area}) ${phone.number}` : phone.number
+    ).filter(phone => phone).join('; ');
+  }
+
+  static getPrimaryEmail(emails) {
+    if (!emails || !Array.isArray(emails) || emails.length === 0) return '';
+    const corporateEmail = emails.find(email => email.ownership === 'CORPORATE');
+    return (corporateEmail || emails[0])?.address || '';
+  }
+}
+
+// =============================================
+// GERENCIADOR DE ESTADO
 // =============================================
 class AppState {
   constructor() {
     this.currentTheme = localStorage.getItem("theme") || "dark";
+    this.lastSearch = null;
     this.isLoading = false;
+    this.retryCount = 0;
+    this.exportSelections = new Set();
   }
 
   setTheme(theme) {
@@ -86,10 +258,34 @@ class AppState {
   setLoading(loading) {
     this.isLoading = loading;
   }
+
+  setLastSearch(cnpj) {
+    this.lastSearch = cnpj;
+  }
+
+  toggleExportSelection(cnpj) {
+    if (this.exportSelections.has(cnpj)) {
+      this.exportSelections.delete(cnpj);
+    } else {
+      this.exportSelections.add(cnpj);
+    }
+  }
+
+  selectAllExport(history) {
+    this.exportSelections = new Set(history.map(item => item.cnpj));
+  }
+
+  deselectAllExport() {
+    this.exportSelections.clear();
+  }
+
+  getSelectedExports(history) {
+    return history.filter(item => this.exportSelections.has(item.cnpj));
+  }
 }
 
 // =============================================
-// GERENCIADOR DE API OTIMIZADO
+// GERENCIADOR DE API
 // =============================================
 class ApiManager {
   static async fetchCNPJ(cnpj) {
@@ -99,31 +295,39 @@ class ApiManager {
     try {
       const response = await fetch(`${CONFIG.API_BASE_URL}?cnpj=${cnpj}`, {
         signal: controller.signal,
-        headers: { 'Accept': 'application/json' }
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        }
       });
 
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
       const data = await response.json();
       
       if (data.error) {
-        throw new Error(data.message);
+        throw new Error(data.message || "Erro na consulta");
       }
 
       return data.data;
     } catch (error) {
       clearTimeout(timeoutId);
+      
+      if (error.name === 'AbortError') {
+        throw new Error("Tempo limite excedido na consulta");
+      }
+      
       throw error;
     }
   }
 }
 
 // =============================================
-// FORMATADORES OTIMIZADOS
+// FORMATADORES
 // =============================================
 class Formatters {
   static CNPJ(cnpj) {
@@ -133,7 +337,7 @@ class Formatters {
   static CEP(cep) {
     if (!cep) return "";
     const cleaned = cep.replace(/\D/g, "");
-    return cleaned.length === 8 ? cleaned.replace(/(\d{5})(\d{3})/, "$1-$2") : cep;
+    return cleaned.replace(/(\d{5})(\d{3})/, "$1-$2");
   }
 
   static phone(phone) {
@@ -144,6 +348,8 @@ class Formatters {
       return cleaned.replace(/(\d{2})(\d{5})(\d{4})/, "($1) $2-$3");
     } else if (cleaned.length === 10) {
       return cleaned.replace(/(\d{2})(\d{4})(\d{4})/, "($1) $2-$3");
+    } else if (cleaned.length === 8) {
+      return cleaned.replace(/(\d{4})(\d{4})/, "$1-$2");
     }
     
     return phone;
@@ -152,9 +358,22 @@ class Formatters {
   static date(dateString) {
     if (!dateString) return "";
     try {
-      return new Date(dateString).toLocaleDateString("pt-BR");
-    } catch {
+      const date = new Date(dateString);
+      return date.toLocaleDateString("pt-BR");
+    } catch (e) {
+      console.warn("Erro ao formatar data:", dateString, e);
       return dateString;
+    }
+  }
+
+  static dateTime(dateTimeString) {
+    if (!dateTimeString) return "";
+    try {
+      const date = new Date(dateTimeString);
+      return date.toLocaleString("pt-BR");
+    } catch (e) {
+      console.warn("Erro ao formatar data/hora:", dateTimeString, e);
+      return dateTimeString;
     }
   }
 
@@ -162,31 +381,30 @@ class Formatters {
     if (!value) return "0,00";
     try {
       const number = typeof value === 'string' ? 
-        parseFloat(value.replace('R$', '').replace(/\./g, '').replace(',', '.')) : 
-        Number(value);
+        parseFloat(value.replace('R$', '').replace('.', '').replace(',', '.')) : 
+        parseFloat(value);
       
       return number.toLocaleString("pt-BR", {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       });
-    } catch {
+    } catch (e) {
+      console.warn("Erro ao formatar moeda:", value, e);
       return "0,00";
     }
   }
 }
 
 // =============================================
-// GERENCIADOR DE UI OTIMIZADO
+// GERENCIADOR DE UI
 // =============================================
 class UIManager {
   constructor() {
-    this.elements = this.cacheDOMElements();
-    this.debounceTimer = null;
+    this.elements = this.initializeElements();
     this.bindEvents();
   }
 
-  cacheDOMElements() {
-    // Cache de elementos DOM para acesso rápido
+  initializeElements() {
     return {
       cnpjInput: document.getElementById("cnpjInput"),
       searchBtn: document.getElementById("searchBtn"),
@@ -197,6 +415,8 @@ class UIManager {
       partnersList: document.getElementById("partnersList"),
       themeToggle: document.getElementById("themeToggle"),
       completeData: document.getElementById("completeData"),
+      
+      // Elementos de dados
       companyName: document.getElementById("companyName"),
       tradeName: document.getElementById("tradeName"),
       cnpj: document.getElementById("cnpj"),
@@ -205,36 +425,228 @@ class UIManager {
       address: document.getElementById("address"),
       cnae: document.getElementById("cnae"),
       phones: document.getElementById("phones"),
-      email: document.getElementById("email")
+      email: document.getElementById("email"),
+
+      // Elementos de exportação
+      exportList: document.getElementById("exportList"),
+      selectAllBtn: document.getElementById("selectAllBtn"),
+      deselectAllBtn: document.getElementById("deselectAllBtn"),
+      clearAllBtn: document.getElementById("clearAllBtn"),
+      exportExcelBtn: document.getElementById("exportExcelBtn"),
+      exportCSVBtn: document.getElementById("exportCSVBtn"),
+      exportJSONBtn: document.getElementById("exportJSONBtn"),
+      exportStats: document.getElementById("exportStats"),
+      selectionStats: document.getElementById("selectionStats")
     };
   }
 
   bindEvents() {
-    // Event listeners otimizados
+    // Evento de pesquisa
     this.elements.searchBtn.addEventListener("click", () => this.handleSearch());
     
+    // Enter no input
+    this.elements.cnpjInput.addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
+        this.handleSearch();
+      }
+    });
+
+    // Input com debounce e formatação automática
     this.elements.cnpjInput.addEventListener("input", (e) => {
       this.handleInputFormat(e);
     });
 
-    this.elements.cnpjInput.addEventListener("keypress", (e) => {
-      if (e.key === "Enter") this.handleSearch();
-    });
-
+    // Toggle de tema
     this.elements.themeToggle.addEventListener("click", () => this.toggleTheme());
 
-    // Delegation de eventos para tabs
-    document.querySelector(".tabs").addEventListener("click", (e) => {
-      if (e.target.classList.contains("tab-button")) {
+    // Tabs
+    document.querySelectorAll(".tab-button").forEach((button) => {
+      button.addEventListener("click", (e) => {
         this.switchTab(e.target.dataset.tab);
-      }
+      });
     });
 
+    // Eventos de exportação
+    this.elements.selectAllBtn.addEventListener("click", () => this.handleSelectAll());
+    this.elements.deselectAllBtn.addEventListener("click", () => this.handleDeselectAll());
+    this.elements.clearAllBtn.addEventListener("click", () => this.handleClearAll());
+    this.elements.exportExcelBtn.addEventListener("click", () => this.handleExport('excel'));
+    this.elements.exportCSVBtn.addEventListener("click", () => this.handleExport('csv'));
+    this.elements.exportJSONBtn.addEventListener("click", () => this.handleExport('json'));
+
+    // Focar no input ao carregar
     this.elements.cnpjInput.focus();
+
+    // Carregar histórico de exportação
+    this.loadExportHistory();
   }
+
+  // =============================================
+  // MANIPULAÇÃO DE EXPORTAÇÃO
+  // =============================================
+
+  loadExportHistory() {
+    const history = SearchHistoryManager.getHistoryList();
+    this.updateExportUI(history);
+  }
+
+  updateExportUI(history) {
+    const hasHistory = history.length > 0;
+    
+    // Atualizar estatísticas
+    this.elements.exportStats.textContent = `${history.length} pesquisa(s) salva(s)`;
+    
+    const selectedCount = appState.exportSelections.size;
+    if (selectedCount > 0) {
+      this.elements.selectionStats.textContent = `${selectedCount} selecionada(s)`;
+      this.elements.selectionStats.classList.remove('hidden');
+    } else {
+      this.elements.selectionStats.classList.add('hidden');
+    }
+
+    // Habilitar/desabilitar botões
+    const hasSelections = selectedCount > 0;
+    this.elements.exportExcelBtn.disabled = !hasSelections;
+    this.elements.exportCSVBtn.disabled = !hasSelections;
+    this.elements.exportJSONBtn.disabled = !hasSelections;
+    this.elements.clearAllBtn.disabled = !hasHistory;
+
+    // Atualizar lista
+    if (!hasHistory) {
+      this.elements.exportList.innerHTML = `
+        <div class="empty-state">
+          <div class="icon">📋</div>
+          <h3>Nenhuma pesquisa salva</h3>
+          <p>As pesquisas que você fizer aparecerão aqui automaticamente</p>
+        </div>
+      `;
+      return;
+    }
+
+    const historyHTML = history.map(item => {
+      const isSelected = appState.exportSelections.has(item.cnpj);
+      const formattedCNPJ = Formatters.CNPJ(item.cnpj);
+      const companyName = item.companyName || 'Nome não disponível';
+      
+      return `
+        <div class="export-item" data-cnpj="${item.cnpj}">
+          <label class="export-checkbox">
+            <input 
+              type="checkbox" 
+              ${isSelected ? 'checked' : ''}
+              onchange="uiManager.handleExportSelection('${item.cnpj}')"
+            />
+            <span class="checkmark"></span>
+          </label>
+          <div class="export-info">
+            <div class="export-company">${companyName}</div>
+            <div class="export-cnpj">${formattedCNPJ}</div>
+            <div class="export-date">Consultado em: ${Formatters.dateTime(item.timestamp)}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    this.elements.exportList.innerHTML = historyHTML;
+  }
+
+  handleExportSelection(cnpj) {
+    appState.toggleExportSelection(cnpj);
+    this.loadExportHistory();
+  }
+
+  handleSelectAll() {
+    const history = SearchHistoryManager.getHistoryList();
+    appState.selectAllExport(history);
+    this.loadExportHistory();
+  }
+
+  handleDeselectAll() {
+    appState.deselectAllExport();
+    this.loadExportHistory();
+  }
+
+  handleClearAll() {
+    if (confirm('Tem certeza que deseja limpar todas as pesquisas salvas?')) {
+      SearchHistoryManager.clearHistory();
+      appState.deselectAllExport();
+      this.loadExportHistory();
+      this.showNotification('Todas as pesquisas foram removidas', 'success');
+    }
+  }
+
+  handleExport(format) {
+    const history = SearchHistoryManager.getHistoryList();
+    const selections = appState.getSelectedExports(history);
+    
+    if (selections.length === 0) {
+      this.showNotification('Selecione pelo menos uma pesquisa para exportar', 'error');
+      return;
+    }
+
+    try {
+      let content, filename, mimeType;
+
+      switch (format) {
+        case 'excel':
+          content = ExportManager.exportToExcel(selections);
+          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.xls`;
+          mimeType = 'application/vnd.ms-excel';
+          break;
+        case 'csv':
+          content = ExportManager.exportToCSV(selections);
+          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
+          mimeType = 'text/csv';
+          break;
+        case 'json':
+          content = ExportManager.exportToJSON(selections);
+          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.json`;
+          mimeType = 'application/json';
+          break;
+      }
+
+      ExportManager.downloadFile(content, filename, mimeType);
+      this.showNotification(`Arquivo ${format.toUpperCase()} baixado com sucesso!`, 'success');
+      
+    } catch (error) {
+      console.error('Erro na exportação:', error);
+      this.showNotification('Erro ao exportar arquivo', 'error');
+    }
+  }
+
+  showNotification(message, type = 'info') {
+    // Implementação simples de notificação
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+    notification.textContent = message;
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 12px 20px;
+      background: ${type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#3b82f6'};
+      color: white;
+      border-radius: 8px;
+      z-index: 1000;
+      animation: slideIn 0.3s ease;
+    `;
+
+    document.body.appendChild(notification);
+
+    setTimeout(() => {
+      notification.remove();
+    }, 3000);
+  }
+
+  // =============================================
+  // MÉTODOS EXISTENTES (mantidos para compatibilidade)
+  // =============================================
 
   handleInputFormat(e) {
     const input = e.target;
+    const cursorPosition = input.selectionStart;
+    const originalLength = input.value.length;
+    
     let value = input.value.replace(/\D/g, "");
     
     if (value.length <= 14) {
@@ -247,9 +659,18 @@ class UIManager {
       } else if (value.length > 2) {
         value = value.replace(/(\d{2})(\d{0,3})/, "$1.$2");
       }
+    } else {
+      value = value.substring(0, 14);
+      value = value.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
     }
     
     input.value = value;
+    
+    const newLength = input.value.length;
+    const lengthDiff = newLength - originalLength;
+    const newCursorPosition = cursorPosition + lengthDiff;
+    
+    input.setSelectionRange(newCursorPosition, newCursorPosition);
   }
 
   async handleSearch() {
@@ -271,15 +692,41 @@ class UIManager {
   async searchCNPJ(cnpj) {
     this.showLoading();
     this.disableSearchButton(true);
+    appState.setLoading(true);
 
     try {
+      console.log("🔍 Iniciando consulta para CNPJ:", cnpj);
+      
       const data = await ApiManager.fetchCNPJ(cnpj);
+      console.log("✅ Dados recebidos com sucesso");
+
+      // Salvar no histórico de pesquisas
+      SearchHistoryManager.saveToHistory(cnpj, data);
+      
       this.displayData(data);
+      appState.setLastSearch(cnpj);
+      appState.retryCount = 0;
+      
+      // Atualizar a aba de exportação se estiver visível
+      this.loadExportHistory();
+      
     } catch (error) {
+      console.error("💥 Erro na consulta:", error);
+      
+      if (appState.retryCount < CONFIG.MAX_RETRIES) {
+        appState.retryCount++;
+        console.log(`🔄 Tentativa ${appState.retryCount} de ${CONFIG.MAX_RETRIES}`);
+        
+        await this.delay(CONFIG.RETRY_DELAY);
+        return this.searchCNPJ(cnpj);
+      }
+      
       this.showError(this.getErrorMessage(error));
+      appState.retryCount = 0;
     } finally {
       this.hideLoading();
       this.disableSearchButton(false);
+      appState.setLoading(false);
     }
   }
 
@@ -287,141 +734,181 @@ class UIManager {
     const message = error.message || "Erro desconhecido";
     
     if (message.includes("Tempo limite")) {
-      return "Consulta demorou muito tempo. Tente novamente.";
+      return "A consulta demorou muito tempo. Tente novamente.";
     } else if (message.includes("404") || message.includes("não encontrada")) {
       return "Empresa não encontrada para o CNPJ informado.";
     } else if (message.includes("429") || message.includes("Limite")) {
-      return "Limite de consultas excedido. Tente novamente mais tarde.";
+      return "Limite de consultas excedido. Tente novamente em alguns instantes.";
     } else if (message.includes("Failed to fetch")) {
-      return "Erro de conexão. Verifique sua internet.";
+      return "Erro de conexão. Verifique sua internet e tente novamente.";
     }
     
     return `Erro: ${message}`;
   }
 
   displayData(data) {
-    if (!data?.taxId) {
-      this.showError("Dados da empresa não encontrados");
+    if (!data || !data.taxId) {
+      this.showError("Dados da empresa não encontrados ou inválidos");
       return;
     }
 
-    // Dados básicos de forma otimizada
-    this.displayBasicData(data);
+    console.log("📊 Exibindo dados:", data);
+
+    this.setElementText(this.elements.companyName, data.company?.name);
+    this.setElementText(this.elements.tradeName, data.alias || data.company?.name);
+    this.setElementText(this.elements.cnpj, Formatters.CNPJ(data.taxId));
+    
+    const iePrincipal = this.getPrincipalIE(data.registrations);
+    this.setElementText(this.elements.ie, iePrincipal);
+
+    const statusText = data.status?.text || "Não informado";
+    this.setElementText(this.elements.status, statusText);
+    this.elements.status.className = `value ${statusText.toLowerCase().includes("ativa") ? "status-active" : "status-inactive"}`;
+
+    const address = this.formatAddress(data.address);
+    this.setElementText(this.elements.address, address);
+
+    this.setElementText(this.elements.cnae, data.mainActivity?.text);
+
+    const phones = this.formatPhones(data.phones);
+    this.setElementText(this.elements.phones, phones);
+
+    const email = this.getPrimaryEmail(data.emails);
+    this.setElementText(this.elements.email, email);
+
     this.displayPartners(data.company?.members);
     this.displayCompleteData(data);
+
     this.showResult();
   }
 
-  displayBasicData(data) {
-    const elements = this.elements;
-    
-    elements.companyName.textContent = data.company?.name || "Não informado";
-    elements.tradeName.textContent = data.alias || data.company?.name || "Não informado";
-    elements.cnpj.textContent = Formatters.CNPJ(data.taxId);
-    
-    const iePrincipal = this.getPrincipalIE(data.registrations);
-    elements.ie.textContent = iePrincipal || "Não informado";
-
-    const statusText = data.status?.text || "Não informado";
-    elements.status.textContent = statusText;
-    elements.status.className = `value ${statusText.toLowerCase().includes("ativa") ? "status-active" : "status-inactive"}`;
-
-    elements.address.textContent = this.formatAddress(data.address);
-    elements.cnae.textContent = data.mainActivity?.text || "Não informado";
-    elements.phones.textContent = this.formatPhones(data.phones);
-    elements.email.textContent = this.getPrimaryEmail(data.emails);
-  }
-
   getPrincipalIE(registrations) {
-    if (!Array.isArray(registrations)) return null;
-    const ie = registrations.find(reg => reg.type?.id === 1) || registrations[0];
-    return ie ? `${ie.number} (${ie.state})` : null;
+    if (!registrations || !Array.isArray(registrations)) return "Não informado";
+
+    const ieNormal = registrations.find(reg => reg.type?.id === 1);
+    if (ieNormal) return `${ieNormal.number} (${ieNormal.state})`;
+
+    const primeira = registrations[0];
+    if (primeira) return `${primeira.number} (${primeira.state})`;
+
+    return "Não informado";
   }
 
   formatAddress(address) {
     if (!address) return "Não informado";
-    
-    const parts = [
+
+    const addressParts = [
       address.street,
       address.number,
       address.details,
       address.district,
       address.city,
       address.state
-    ].filter(part => part?.trim());
-    
-    const formatted = parts.join(", ");
-    const zip = address.zip ? ` - CEP: ${Formatters.CEP(address.zip)}` : "";
-    
-    return formatted + zip || "Não informado";
+    ].filter(part => part && part.trim() !== "");
+
+    const formattedAddress = addressParts.join(", ");
+    const zipCode = address.zip ? ` - CEP: ${Formatters.CEP(address.zip)}` : "";
+
+    return formattedAddress + zipCode || "Não informado";
   }
 
   formatPhones(phones) {
-    if (!Array.isArray(phones)) return "Não informado";
-    
-    const formatted = phones.map(phone => 
-      phone.area && phone.number ? 
-        Formatters.phone(`${phone.area}${phone.number}`) : 
-        phone.number
-    ).filter(phone => phone);
-    
-    return formatted.length > 0 ? formatted.join(", ") : "Não informado";
+    if (!phones || !Array.isArray(phones) || phones.length === 0) {
+      return "Não informado";
+    }
+
+    const formattedPhones = phones.map(phone => {
+      if (phone.area && phone.number) {
+        return Formatters.phone(`${phone.area}${phone.number}`);
+      }
+      return phone.number || "";
+    }).filter(phone => phone !== "");
+
+    return formattedPhones.join(", ") || "Não informado";
   }
 
   getPrimaryEmail(emails) {
-    if (!Array.isArray(emails)) return "Não informado";
-    const email = emails.find(e => e.ownership === "CORPORATE") || emails[0];
-    return email?.address || "Não informado";
+    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+      return "Não informado";
+    }
+
+    const corporateEmail = emails.find(email => email.ownership === "CORPORATE");
+    const firstEmail = emails[0];
+
+    return (corporateEmail || firstEmail)?.address || "Não informado";
   }
 
   displayPartners(members) {
-    const container = this.elements.partnersList;
-    container.innerHTML = "";
+    this.elements.partnersList.innerHTML = "";
 
-    if (!Array.isArray(members) || members.length === 0) {
+    if (!members || members.length === 0) {
       this.elements.partnersCard.classList.add("hidden");
       return;
     }
 
-    // Limitar a 6 sócios para performance
-    const displayedMembers = members.slice(0, 6);
-    
-    // Usar DocumentFragment para inserção em lote
-    const fragment = document.createDocumentFragment();
-    
-    displayedMembers.forEach(member => {
-      const partnerElement = this.createPartnerElement(member);
-      fragment.appendChild(partnerElement);
+    console.log("👥 Exibindo sócios:", members);
+
+    const sortedMembers = [...members].sort((a, b) => {
+      try {
+        const dateA = a.since ? new Date(a.since) : new Date(0);
+        const dateB = b.since ? new Date(b.since) : new Date(0);
+        return dateB - dateA;
+      } catch (e) {
+        return 0;
+      }
     });
 
-    container.appendChild(fragment);
+    const displayedMembers = sortedMembers.slice(0, 6);
+
+    displayedMembers.forEach(member => {
+      const partnerItem = this.createPartnerElement(member);
+      this.elements.partnersList.appendChild(partnerItem);
+    });
+
+    if (sortedMembers.length > 6) {
+      const morePartners = document.createElement("div");
+      morePartners.className = "partner-more";
+      morePartners.textContent = `+ ${sortedMembers.length - 6} outros sócios...`;
+      this.elements.partnersList.appendChild(morePartners);
+    }
+
     this.elements.partnersCard.classList.remove("hidden");
   }
 
   createPartnerElement(member) {
-    const div = document.createElement("div");
-    div.className = "partner-item";
-    
-    div.innerHTML = `
-      <div class="partner-name">${member.person?.name || "Nome não informado"}</div>
-      <div class="partner-document">Cargo: ${member.role?.text || "Não informado"}</div>
-      <div class="partner-qualification">Desde: ${Formatters.date(member.since) || "Data não informada"}</div>
-      <div class="partner-qualification">Faixa Etária: ${member.person?.age || "Não informada"}</div>
-    `;
-    
-    return div;
+    const partnerItem = document.createElement("div");
+    partnerItem.className = "partner-item";
+    partnerItem.setAttribute("role", "listitem");
+
+    const partnerName = document.createElement("div");
+    partnerName.className = "partner-name";
+    partnerName.textContent = member.person?.name || "Nome não informado";
+
+    const partnerRole = document.createElement("div");
+    partnerRole.className = "partner-document";
+    partnerRole.textContent = `Cargo: ${member.role?.text || "Não informado"}`;
+
+    const partnerSince = document.createElement("div");
+    partnerSince.className = "partner-qualification";
+    partnerSince.textContent = `Desde: ${Formatters.date(member.since) || "Data não informada"}`;
+
+    const partnerAge = document.createElement("div");
+    partnerAge.className = "partner-qualification";
+    partnerAge.textContent = `Faixa Etária: ${member.person?.age || "Não informada"}`;
+
+    partnerItem.appendChild(partnerName);
+    partnerItem.appendChild(partnerRole);
+    partnerItem.appendChild(partnerSince);
+    partnerItem.appendChild(partnerAge);
+
+    return partnerItem;
   }
 
   displayCompleteData(data) {
-    const container = this.elements.completeData;
-    
-    // Limpeza eficiente
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
+    this.elements.completeData.innerHTML = "";
 
     if (!data) {
-      this.showEmptyState(container, "Nenhum dado completo disponível");
+      this.showEmptyState(this.elements.completeData, "Nenhum dado completo disponível");
       return;
     }
 
@@ -431,18 +918,19 @@ class UIManager {
       this.createAddressSection(data),
       this.createContactSection(data),
       this.createActivitiesSection(data),
+      this.createRegistrationsSection(data),
       this.createPartnersSection(data)
-    ].filter(section => section !== null);
+    ];
 
-    if (sections.length === 0) {
-      this.showEmptyState(container, "Nenhum dado completo disponível");
-      return;
+    sections.forEach(section => {
+      if (section) {
+        this.elements.completeData.appendChild(section);
+      }
+    });
+
+    if (this.elements.completeData.children.length === 0) {
+      this.showEmptyState(this.elements.completeData, "Nenhum dado completo disponível");
     }
-
-    // Inserção em lote
-    const fragment = document.createDocumentFragment();
-    sections.forEach(section => fragment.appendChild(section));
-    container.appendChild(fragment);
   }
 
   createBasicInfoSection(data) {
@@ -451,11 +939,13 @@ class UIManager {
       { label: "Razão Social", value: data.company?.name },
       { label: "Nome Fantasia", value: data.alias },
       { label: "Data de Abertura", value: Formatters.date(data.founded) },
+      { label: "Data da Última Atualização", value: Formatters.dateTime(data.updated) },
       { label: "Situação Cadastral", value: data.status?.text },
+      { label: "Data da Situação", value: Formatters.date(data.statusDate) },
       { label: "Matriz/Filial", value: data.head ? "Matriz" : "Filial" }
-    ].filter(field => field.value);
+    ];
 
-    return fields.length > 0 ? this.createSection("Informações Básicas", fields) : null;
+    return this.createSection("Informações Básicas", fields);
   }
 
   createCompanyInfoSection(data) {
@@ -468,11 +958,29 @@ class UIManager {
       });
     }
 
+    if (data.company?.size) {
+      fields.push({
+        label: "Porte da Empresa",
+        value: `${data.company.size.text} (${data.company.size.acronym})`
+      });
+    }
+
     if (data.company?.equity) {
       fields.push({
         label: "Capital Social",
         value: `R$ ${Formatters.currency(data.company.equity)}`
       });
+    }
+
+    const regimes = [];
+    if (data.company?.simples?.optant) {
+      regimes.push(`Simples Nacional desde ${Formatters.date(data.company.simples.since)}`);
+    }
+    if (data.company?.simei?.optant) {
+      regimes.push(`MEI desde ${Formatters.date(data.company.simei.since)}`);
+    }
+    if (regimes.length > 0) {
+      fields.push({ label: "Regimes Especiais", value: regimes });
     }
 
     return fields.length > 0 ? this.createSection("Informações da Empresa", fields) : null;
@@ -484,10 +992,13 @@ class UIManager {
     const fields = [
       { label: "Logradouro", value: data.address.street },
       { label: "Número", value: data.address.number },
+      { label: "Complemento", value: data.address.details },
       { label: "Bairro", value: data.address.district },
       { label: "Cidade", value: data.address.city },
       { label: "Estado", value: data.address.state },
-      { label: "CEP", value: Formatters.CEP(data.address.zip) }
+      { label: "CEP", value: Formatters.CEP(data.address.zip) },
+      { label: "País", value: data.address.country?.name },
+      { label: "Código Município", value: data.address.municipality }
     ].filter(field => field.value);
 
     return fields.length > 0 ? this.createSection("Endereço", fields) : null;
@@ -496,20 +1007,24 @@ class UIManager {
   createContactSection(data) {
     const fields = [];
 
-    if (data.phones?.length > 0) {
-      const phones = data.phones.map(phone => 
-        phone.area && phone.number ? 
-          `Fixo: ${Formatters.phone(`${phone.area}${phone.number}`)}` : 
-          `Fixo: ${phone.number}`
-      ).filter(phone => !phone.includes("undefined"));
+    if (data.phones && data.phones.length > 0) {
+      const phones = data.phones.map(phone => {
+        const tipo = phone.type === "LANDLINE" ? "Fixo" : "Celular";
+        return `${tipo}: ${phone.area && phone.number ? 
+          Formatters.phone(`${phone.area}${phone.number}`) : 
+          phone.number}`;
+      }).filter(phone => !phone.includes("undefined"));
       
       if (phones.length > 0) {
         fields.push({ label: "Telefones", value: phones });
       }
     }
 
-    if (data.emails?.length > 0) {
-      const emails = data.emails.map(email => email.address);
+    if (data.emails && data.emails.length > 0) {
+      const emails = data.emails.map(email => {
+        const tipo = email.ownership === "CORPORATE" ? "Corporativo" : "Outro";
+        return `${tipo}: ${email.address}`;
+      });
       fields.push({ label: "E-mails", value: emails });
     }
 
@@ -526,24 +1041,63 @@ class UIManager {
       });
     }
 
+    if (data.sideActivities && data.sideActivities.length > 0) {
+      const secondaryActivities = data.sideActivities.map(
+        activity => `${activity.id} - ${activity.text}`
+      );
+      fields.push({ label: "CNAEs Secundários", value: secondaryActivities });
+    }
+
     return fields.length > 0 ? this.createSection("Atividades Econômicas", fields) : null;
+  }
+
+  createRegistrationsSection(data) {
+    const fields = [];
+
+    if (data.registrations && data.registrations.length > 0) {
+      const ies = data.registrations.map(reg => {
+        const status = reg.enabled ? "✅" : "❌";
+        return `${status} ${reg.number} - ${reg.state} (${reg.type?.text}) - ${reg.status?.text}`;
+      });
+      fields.push({ label: "Inscrições Estaduais", value: ies });
+    }
+
+    if (data.suframa && data.suframa.length > 0) {
+      const suframaItems = data.suframa.map(suf => {
+        const status = suf.approved ? "✅ Aprovado" : "❌ Pendente";
+        return `Nº: ${suf.number} - ${status} - Desde: ${Formatters.date(suf.since)}`;
+      });
+      fields.push({ label: "Registro SUFRAMA", value: suframaItems });
+
+      if (data.suframa[0].incentives && data.suframa[0].incentives.length > 0) {
+        const incentivos = data.suframa[0].incentives.map(
+          inc => `${inc.tribute}: ${inc.benefit} - ${inc.purpose}`
+        );
+        fields.push({ label: "Incentivos Fiscais SUFRAMA", value: incentivos });
+      }
+    }
+
+    return fields.length > 0 ? this.createSection("Registros e Inscrições", fields) : null;
   }
 
   createPartnersSection(data) {
     if (!data.company?.members || data.company.members.length === 0) return null;
 
-    const partners = data.company.members.map(member => 
-      `${member.person?.name} - ${member.role?.text}`
-    );
+    const socios = data.company.members.map(member => {
+      const since = member.since ? ` desde ${Formatters.date(member.since)}` : "";
+      return `${member.person?.name} - ${member.role?.text}${since}`;
+    });
 
     return this.createSection("Sócios e Administradores", [
-      { label: "Lista Completa", value: partners }
+      { label: "Lista Completa", value: socios }
     ]);
   }
 
   createSection(title, fields) {
     const validFields = fields.filter(field => 
-      field.value && 
+      field.value !== undefined && 
+      field.value !== null && 
+      field.value !== "" && 
       field.value !== "Não informado" &&
       !(Array.isArray(field.value) && field.value.length === 0)
     );
@@ -553,14 +1107,14 @@ class UIManager {
     const section = document.createElement("div");
     section.className = "info-section";
 
-    const titleEl = document.createElement("h3");
-    titleEl.className = "section-title";
-    titleEl.textContent = title;
-    section.appendChild(titleEl);
+    const sectionTitle = document.createElement("h3");
+    sectionTitle.className = "section-title";
+    sectionTitle.textContent = title;
+    section.appendChild(sectionTitle);
 
     validFields.forEach(field => {
       const item = this.createInfoItem(field.label, field.value);
-      section.appendChild(item);
+      if (item) section.appendChild(item);
     });
 
     return section;
@@ -570,44 +1124,70 @@ class UIManager {
     const item = document.createElement("div");
     item.className = "info-item";
 
-    item.innerHTML = `
-      <span class="label">${label}</span>
-      <span class="value">${Array.isArray(value) ? value.map(v => `• ${v}`).join('<br>') : value}</span>
-    `;
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "label";
+    labelSpan.textContent = label;
 
+    const valueSpan = document.createElement("span");
+    valueSpan.className = "value";
+
+    if (Array.isArray(value)) {
+      valueSpan.innerHTML = value.map(item => `• ${this.escapeHtml(item)}`).join("<br>");
+    } else {
+      valueSpan.textContent = String(value);
+    }
+
+    item.appendChild(labelSpan);
+    item.appendChild(valueSpan);
     return item;
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   showEmptyState(container, message) {
     container.innerHTML = `
       <div class="empty-state">
         <div class="icon">📄</div>
+        <h3>Sem dados</h3>
         <p>${message}</p>
       </div>
     `;
   }
 
-  // Controles de UI otimizados
+  setElementText(element, text) {
+    element.textContent = text || "Não informado";
+  }
+
   showLoading() {
     this.elements.loading.classList.remove("hidden");
+    this.elements.loading.setAttribute("aria-busy", "true");
   }
 
   hideLoading() {
     this.elements.loading.classList.add("hidden");
+    this.elements.loading.setAttribute("aria-busy", "false");
   }
 
   showResult() {
     this.elements.result.classList.remove("hidden");
+    this.elements.result.setAttribute("aria-live", "polite");
+    
+    const firstTab = document.querySelector('.tab-button');
+    if (firstTab) firstTab.focus();
   }
 
   hideResult() {
     this.elements.result.classList.add("hidden");
-    this.elements.partnersCard.classList.add("hidden");
   }
 
   showError(message) {
     this.elements.errorMessage.textContent = message;
     this.elements.errorMessage.classList.remove("hidden");
+    this.elements.errorMessage.focus();
   }
 
   clearError() {
@@ -617,65 +1197,135 @@ class UIManager {
 
   disableSearchButton(disabled) {
     this.elements.searchBtn.disabled = disabled;
-    const text = this.elements.searchBtn.querySelector(".button-text");
-    const loading = this.elements.searchBtn.querySelector(".button-loading");
+    const buttonText = this.elements.searchBtn.querySelector(".button-text");
+    const buttonLoading = this.elements.searchBtn.querySelector(".button-loading");
 
     if (disabled) {
-      text.classList.add("hidden");
-      loading.classList.remove("hidden");
+      buttonText.classList.add("hidden");
+      buttonLoading.classList.remove("hidden");
+      this.elements.searchBtn.setAttribute("aria-label", "Consultando...");
     } else {
-      text.classList.remove("hidden");
-      loading.classList.add("hidden");
+      buttonText.classList.remove("hidden");
+      buttonLoading.classList.add("hidden");
+      this.elements.searchBtn.setAttribute("aria-label", "Pesquisar CNPJ");
     }
   }
 
   switchTab(tabName) {
-    // Atualizar botões
-    document.querySelectorAll(".tab-button").forEach(btn => {
-      btn.classList.toggle("active", btn.dataset.tab === tabName);
+    document.querySelectorAll(".tab-button").forEach(button => {
+      button.classList.remove("active");
+      button.setAttribute("aria-selected", "false");
     });
+    
+    const activeButton = document.querySelector(`[data-tab="${tabName}"]`);
+    activeButton.classList.add("active");
+    activeButton.setAttribute("aria-selected", "true");
 
-    // Atualizar conteúdo
     document.querySelectorAll(".tab-pane").forEach(pane => {
-      pane.classList.toggle("active", pane.id === `tab-${tabName}`);
+      pane.classList.remove("active");
     });
+    
+    const activePane = document.getElementById(`tab-${tabName}`);
+    activePane.classList.add("active");
+
+    // Se for a aba de exportação, atualizar a lista
+    if (tabName === 'exportar') {
+      this.loadExportHistory();
+    }
   }
 
   toggleTheme() {
-    const isDark = document.body.classList.toggle("dark-mode");
-    const icon = this.elements.themeToggle.querySelector(".theme-icon");
-    
-    icon.textContent = isDark ? "☀️" : "🌙";
-    appState.setTheme(isDark ? "dark" : "light");
+    const body = document.body;
+    const isDarkMode = body.classList.contains("dark-mode");
+    const themeIcon = this.elements.themeToggle.querySelector(".theme-icon");
+
+    if (isDarkMode) {
+      body.classList.remove("dark-mode");
+      themeIcon.textContent = "🌙";
+      appState.setTheme("light");
+    } else {
+      body.classList.add("dark-mode");
+      themeIcon.textContent = "☀️";
+      appState.setTheme("dark");
+    }
+
+    this.announceToScreenReader(`Modo ${isDarkMode ? 'claro' : 'escuro'} ativado`);
+  }
+
+  announceToScreenReader(message) {
+    const announcer = document.getElementById('aria-announcer') || this.createAriaAnnouncer();
+    announcer.textContent = message;
+  }
+
+  createAriaAnnouncer() {
+    const announcer = document.createElement('div');
+    announcer.id = 'aria-announcer';
+    announcer.className = 'sr-only';
+    announcer.setAttribute('aria-live', 'polite');
+    announcer.setAttribute('aria-atomic', 'true');
+    document.body.appendChild(announcer);
+    return announcer;
+  }
+
+  delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
 // =============================================
-// INICIALIZAÇÃO OTIMIZADA
+// INICIALIZAÇÃO DA APLICAÇÃO
 // =============================================
-let appState, uiManager;
+let appState;
+let uiManager;
 
 function initializeApp() {
+  console.log("🚀 Inicializando CNPJ Finder...");
+  
   appState = new AppState();
   uiManager = new UIManager();
+  
   loadSavedTheme();
+  setupServiceWorker();
+  
+  console.log("✅ Aplicação inicializada com sucesso");
 }
 
 function loadSavedTheme() {
   const savedTheme = localStorage.getItem("theme");
-  const isDark = savedTheme === "dark" || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  
-  document.body.classList.toggle("dark-mode", isDark);
-  
-  const icon = document.querySelector(".theme-icon");
-  if (icon) {
-    icon.textContent = isDark ? "☀️" : "🌙";
+  const body = document.body;
+  const themeIcon = document.querySelector(".theme-icon");
+
+  if (savedTheme === "light") {
+    body.classList.remove("dark-mode");
+    themeIcon.textContent = "🌙";
+  } else {
+    body.classList.add("dark-mode");
+    themeIcon.textContent = "☀️";
   }
 }
 
-// Inicialização otimizada
+function setupServiceWorker() {
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js')
+        .then(registration => {
+          console.log('✅ Service Worker registrado:', registration);
+        })
+        .catch(error => {
+          console.log('❌ Falha no Service Worker:', error);
+        });
+    });
+  }
+}
+
+// Inicializar quando o DOM estiver pronto
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initializeApp);
 } else {
   initializeApp();
+}
+
+// Exportar para testes
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { CNPJValidator, Formatters, ApiManager, SearchHistoryManager, ExportManager };
 }
