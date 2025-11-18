@@ -1088,3 +1088,75 @@ input:focus::placeholder {
     color: black !important;
   }
 }
+
+/* ============================================= */
+/* ESTILOS PARA O SISTEMA DE RATE LIMIT */
+/* ============================================= */
+
+.rate-limit-message {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  text-align: left;
+}
+
+.rate-limit-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+}
+
+.rate-limit-content {
+  flex: 1;
+}
+
+.rate-limit-content strong {
+  display: block;
+  color: var(--error-color);
+  margin-bottom: var(--space-xs);
+  font-size: 14px;
+}
+
+.rate-limit-content p {
+  margin-bottom: var(--space-xs);
+  color: var(--text-primary);
+}
+
+.rate-limit-content .timer {
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+  color: var(--primary-color);
+  background: var(--surface-hover);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.rate-limit-content small {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Estados do timer */
+.timer-pulse {
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.7; }
+  100% { opacity: 1; }
+}
+
+/* Responsividade para mensagens de rate limit */
+@media (max-width: 480px) {
+  .rate-limit-message {
+    flex-direction: column;
+    text-align: center;
+    gap: var(--space-sm);
+  }
+  
+  .rate-limit-icon {
+    align-self: center;
+  }
+}

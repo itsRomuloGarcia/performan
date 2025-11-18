@@ -9,8 +9,89 @@ const CONFIG = {
   RETRY_DELAY: 1000,
   MAX_SEARCH_HISTORY: 50,
   // Nova configuração para ambiente
-  ENV: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'development' : 'production'
+  ENV: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'development' : 'production',
+  // Configurações de rate limit
+  RATE_LIMIT_DELAY: 60000, // 60 segundos padrão
+  AUTO_RETRY_ENABLED: true // Se deve retornar automaticamente
 };
+
+// =============================================
+// GERENCIADOR DE RATE LIMIT COM TIMER
+// =============================================
+class RateLimitManager {
+  static STORAGE_KEY = 'cnpj_rate_limit';
+  static timerInterval = null;
+  static currentTimer = null;
+
+  static setRateLimit(seconds) {
+    const resetTime = Date.now() + (seconds * 1000);
+    localStorage.setItem(this.STORAGE_KEY, resetTime.toString());
+    this.startTimer(seconds);
+  }
+
+  static isRateLimited() {
+    const resetTime = localStorage.getItem(this.STORAGE_KEY);
+    if (!resetTime) return false;
+    
+    return Date.now() < parseInt(resetTime);
+  }
+
+  static getRemainingTime() {
+    const resetTime = localStorage.getItem(this.STORAGE_KEY);
+    if (!resetTime) return 0;
+    
+    const remaining = parseInt(resetTime) - Date.now();
+    return Math.max(0, Math.ceil(remaining / 1000));
+  }
+
+  static clearRateLimit() {
+    localStorage.removeItem(this.STORAGE_KEY);
+    this.stopTimer();
+  }
+
+  static startTimer(seconds) {
+    this.stopTimer(); // Para qualquer timer existente
+    
+    let remaining = seconds;
+    this.currentTimer = {
+      startTime: Date.now(),
+      duration: seconds * 1000,
+      remaining: seconds
+    };
+
+    this.timerInterval = setInterval(() => {
+      remaining--;
+      this.currentTimer.remaining = remaining;
+
+      // Atualizar UI se disponível
+      if (typeof uiManager !== 'undefined' && uiManager.updateTimerDisplay) {
+        uiManager.updateTimerDisplay(remaining);
+      }
+
+      if (remaining <= 0) {
+        this.stopTimer();
+        this.clearRateLimit();
+        
+        // Executar retry automático se configurado
+        if (CONFIG.AUTO_RETRY_ENABLED && typeof uiManager !== 'undefined') {
+          uiManager.handleAutoRetry();
+        }
+      }
+    }, 1000);
+  }
+
+  static stopTimer() {
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+      this.currentTimer = null;
+    }
+  }
+
+  static getTimerInfo() {
+    return this.currentTimer;
+  }
+}
 
 // =============================================
 // VALIDAÇÃO DE CNPJ (ALGORITMO OFICIAL)
@@ -408,6 +489,7 @@ class AppState {
     this.isLoading = false;
     this.retryCount = 0;
     this.exportSelections = new Set();
+    this.pendingSearch = null; // Para armazenar pesquisa pendente
   }
 
   setTheme(theme) {
@@ -421,6 +503,14 @@ class AppState {
 
   setLastSearch(cnpj) {
     this.lastSearch = cnpj;
+  }
+
+  setPendingSearch(cnpj) {
+    this.pendingSearch = cnpj;
+  }
+
+  clearPendingSearch() {
+    this.pendingSearch = null;
   }
 
   toggleExportSelection(cnpj) {
@@ -464,6 +554,12 @@ class ApiManager {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
+        // Verificar se é rate limit (429)
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('Retry-After');
+          const waitTime = retryAfter ? parseInt(retryAfter) : 60;
+          throw new Error(`RATE_LIMIT:${waitTime}`);
+        }
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
@@ -553,6 +649,12 @@ class Formatters {
       return "0,00";
     }
   }
+
+  static time(seconds) {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+  }
 }
 
 // =============================================
@@ -641,16 +743,30 @@ class Telemetry {
       environment: CONFIG.ENV
     });
   }
+
+  static trackRateLimit(waitTime) {
+    this.trackEvent('rate_limit_triggered', {
+      wait_time: waitTime,
+      environment: CONFIG.ENV
+    });
+  }
+
+  static trackAutoRetry() {
+    this.trackEvent('auto_retry_executed', {
+      environment: CONFIG.ENV
+    });
+  }
 }
 
 // =============================================
-// GERENCIADOR DE UI CORRIGIDO
+// GERENCIADOR DE UI COM TIMER
 // =============================================
 class UIManager {
   constructor() {
     this.elements = this.initializeElements();
     this.bindEvents();
     this.initializeTelemetry();
+    this.initializeRateLimitCheck();
   }
 
   initializeElements() {
@@ -738,6 +854,14 @@ class UIManager {
     this.setupGlobalErrorHandling();
   }
 
+  initializeRateLimitCheck() {
+    // Verificar se há rate limit ativo ao carregar a página
+    if (RateLimitManager.isRateLimited()) {
+      const remaining = RateLimitManager.getRemainingTime();
+      this.showRateLimitError(remaining);
+    }
+  }
+
   setupGlobalErrorHandling() {
     window.addEventListener('error', (event) => {
       Telemetry.trackError(event.error, {
@@ -754,6 +878,72 @@ class UIManager {
         reason: event.reason
       });
     });
+  }
+
+  // =============================================
+  // SISTEMA DE RATE LIMIT E TIMER
+  // =============================================
+
+  showRateLimitError(waitTime) {
+    // Armazenar a pesquisa atual se houver
+    const currentSearch = this.elements.cnpjInput.value;
+    if (currentSearch && CNPJValidator.validate(currentSearch).isValid) {
+      appState.setPendingSearch(CNPJValidator.validate(currentSearch).cleaned);
+    }
+
+    // Configurar o rate limit
+    RateLimitManager.setRateLimit(waitTime);
+    
+    // Atualizar a UI
+    this.disableSearchButton(true);
+    this.elements.cnpjInput.disabled = true;
+    this.elements.errorMessage.classList.remove("hidden");
+    
+    // Iniciar a atualização do display do timer
+    this.updateTimerDisplay(waitTime);
+
+    // Track do evento
+    Telemetry.trackRateLimit(waitTime);
+  }
+
+  updateTimerDisplay(seconds) {
+    if (seconds <= 0) {
+      this.elements.errorMessage.classList.add("hidden");
+      this.disableSearchButton(false);
+      this.elements.cnpjInput.disabled = false;
+      return;
+    }
+
+    const timeString = Formatters.time(seconds);
+    this.elements.errorMessage.innerHTML = `
+      <div class="rate-limit-message">
+        <div class="rate-limit-icon">⏰</div>
+        <div class="rate-limit-content">
+          <strong>Limite de consultas excedido</strong>
+          <p>Nova consulta automática em: <span class="timer">${timeString}</span></p>
+          <small>Você pode continuar navegando, a pesquisa será realizada automaticamente</small>
+        </div>
+      </div>
+    `;
+  }
+
+  handleAutoRetry() {
+    const pendingSearch = appState.pendingSearch;
+    
+    if (pendingSearch && CONFIG.AUTO_RETRY_ENABLED) {
+      console.log("🔄 Executando retry automático...");
+      
+      // Restaurar o CNPJ no input
+      this.elements.cnpjInput.value = Formatters.CNPJ(pendingSearch);
+      
+      // Executar a pesquisa
+      this.handleSearch();
+      
+      // Limpar pesquisa pendente
+      appState.clearPendingSearch();
+      
+      Telemetry.trackAutoRetry();
+    }
   }
 
   // =============================================
@@ -1012,6 +1202,13 @@ class UIManager {
   }
 
   async handleSearch() {
+    // Verificar se está em rate limit
+    if (RateLimitManager.isRateLimited()) {
+      const remaining = RateLimitManager.getRemainingTime();
+      this.showRateLimitError(remaining);
+      return;
+    }
+
     const cnpjValue = this.elements.cnpjInput.value;
     const startTime = Date.now();
     
@@ -1059,19 +1256,26 @@ class UIManager {
       const duration = Date.now() - startTime;
       Telemetry.trackSearch(cnpj, false, duration, error);
       
-      if (appState.retryCount < CONFIG.MAX_RETRIES) {
+      // Verificar se é um erro de rate limit
+      if (error.message.startsWith('RATE_LIMIT:')) {
+        const waitTime = parseInt(error.message.split(':')[1]);
+        this.showRateLimitError(waitTime);
+      } else if (appState.retryCount < CONFIG.MAX_RETRIES) {
         appState.retryCount++;
         console.log(`🔄 Tentativa ${appState.retryCount} de ${CONFIG.MAX_RETRIES}`);
         
         await this.delay(CONFIG.RETRY_DELAY);
         return this.searchCNPJ(cnpj, startTime);
+      } else {
+        this.showError(this.getErrorMessage(error));
+        appState.retryCount = 0;
       }
-      
-      this.showError(this.getErrorMessage(error));
-      appState.retryCount = 0;
     } finally {
       this.hideLoading();
-      this.disableSearchButton(false);
+      // Só reabilita se não estiver em rate limit
+      if (!RateLimitManager.isRateLimited()) {
+        this.disableSearchButton(false);
+      }
       appState.setLoading(false);
     }
   }
@@ -1083,8 +1287,6 @@ class UIManager {
       return "A consulta demorou muito tempo. Tente novamente.";
     } else if (message.includes("404") || message.includes("não encontrada")) {
       return "Empresa não encontrada para o CNPJ informado.";
-    } else if (message.includes("429") || message.includes("Limite")) {
-      return "Limite de consultas excedido. Tente novamente em alguns instantes.";
     } else if (message.includes("Failed to fetch")) {
       return "Erro de conexão. Verifique sua internet e tente novamente.";
     }
@@ -1551,6 +1753,7 @@ class UIManager {
 
   disableSearchButton(disabled) {
     this.elements.searchBtn.disabled = disabled;
+    this.elements.cnpjInput.disabled = disabled; // Desabilita o input também
     const buttonText = this.elements.searchBtn.querySelector(".button-text");
     const buttonLoading = this.elements.searchBtn.querySelector(".button-loading");
 
