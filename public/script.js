@@ -7,7 +7,9 @@ const CONFIG = {
   REQUEST_TIMEOUT: 30000,
   MAX_RETRIES: 2,
   RETRY_DELAY: 1000,
-  MAX_SEARCH_HISTORY: 50
+  MAX_SEARCH_HISTORY: 50,
+  // Nova configuração para ambiente
+  ENV: window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'development' : 'production'
 };
 
 // =============================================
@@ -554,17 +556,44 @@ class Formatters {
 }
 
 // =============================================
-// MONITORAMENTO E TELEMETRIA
+// MONITORAMENTO E TELEMETRIA CORRIGIDO
 // =============================================
 class Telemetry {
+  static isDevelopment() {
+    return CONFIG.ENV === 'development';
+  }
+
   static trackEvent(eventName, properties = {}) {
+    // Google Analytics (se disponível)
     if (typeof gtag !== 'undefined') {
       gtag('event', eventName, properties);
     }
     
     // Log para desenvolvimento
-    if (process.env.NODE_ENV === 'development') {
+    if (this.isDevelopment()) {
       console.log('📊 Evento:', eventName, properties);
+    }
+
+    // Enviar para analytics próprio (opcional)
+    this.sendToAnalytics(eventName, properties);
+  }
+
+  static sendToAnalytics(eventName, properties) {
+    // Implementação básica de analytics
+    // Pode ser expandida para enviar para um serviço externo
+    const analyticsData = {
+      event: eventName,
+      properties: properties,
+      timestamp: new Date().toISOString(),
+      userAgent: navigator.userAgent,
+      url: window.location.href
+    };
+
+    // Armazenar localmente para debug
+    if (this.isDevelopment()) {
+      const analyticsHistory = JSON.parse(localStorage.getItem('analytics_history') || '[]');
+      analyticsHistory.push(analyticsData);
+      localStorage.setItem('analytics_history', JSON.stringify(analyticsHistory.slice(-50))); // Últimos 50 eventos
     }
   }
 
@@ -573,14 +602,16 @@ class Telemetry {
       cnpj_length: cnpj.length,
       success: success,
       duration: duration,
-      error_type: error?.name || null
+      error_type: error?.name || null,
+      environment: CONFIG.ENV
     });
   }
 
   static trackExport(format, itemCount) {
     this.trackEvent('export_data', {
       format: format,
-      item_count: itemCount
+      item_count: itemCount,
+      environment: CONFIG.ENV
     });
   }
 
@@ -588,6 +619,7 @@ class Telemetry {
     this.trackEvent('error_occurred', {
       error_name: error.name,
       error_message: error.message,
+      environment: CONFIG.ENV,
       ...context
     });
     
@@ -595,11 +627,24 @@ class Telemetry {
     if (typeof window.Sentry !== 'undefined') {
       window.Sentry.captureException(error, { extra: context });
     }
+
+    // Log detalhado em desenvolvimento
+    if (this.isDevelopment()) {
+      console.error('❌ Erro:', error, context);
+    }
+  }
+
+  static trackPageView() {
+    this.trackEvent('page_view', {
+      page_title: document.title,
+      page_location: window.location.href,
+      environment: CONFIG.ENV
+    });
   }
 }
 
 // =============================================
-// GERENCIADOR DE UI
+// GERENCIADOR DE UI CORRIGIDO
 // =============================================
 class UIManager {
   constructor() {
@@ -686,13 +731,29 @@ class UIManager {
   }
 
   initializeTelemetry() {
-    // Inicializar analytics se disponível
-    if (typeof gtag !== 'undefined') {
-      Telemetry.trackEvent('page_view', {
-        page_title: document.title,
-        page_location: window.location.href
+    // Inicializar analytics
+    Telemetry.trackPageView();
+    
+    // Configurar error handling global
+    this.setupGlobalErrorHandling();
+  }
+
+  setupGlobalErrorHandling() {
+    window.addEventListener('error', (event) => {
+      Telemetry.trackError(event.error, {
+        type: 'global_error',
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno
       });
-    }
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+      Telemetry.trackError(new Error('Unhandled Promise Rejection'), {
+        type: 'unhandled_rejection',
+        reason: event.reason
+      });
+    });
   }
 
   // =============================================
@@ -773,11 +834,13 @@ class UIManager {
     const history = SearchHistoryManager.getHistoryList();
     appState.selectAllExport(history);
     this.loadExportHistory();
+    Telemetry.trackEvent('export_select_all', { count: history.length });
   }
 
   handleDeselectAll() {
     appState.deselectAllExport();
     this.loadExportHistory();
+    Telemetry.trackEvent('export_deselect_all');
   }
 
   handleClearAll() {
@@ -908,6 +971,9 @@ class UIManager {
     setTimeout(() => {
       notification.remove();
     }, 3000);
+
+    // Track notification
+    Telemetry.trackEvent('notification_shown', { type: type, message: message });
   }
 
   // =============================================
@@ -1060,6 +1126,12 @@ class UIManager {
     this.displayCompleteData(data);
 
     this.showResult();
+
+    // Track successful data display
+    Telemetry.trackEvent('data_displayed', {
+      has_partners: !!(data.company?.members && data.company.members.length > 0),
+      has_activities: !!(data.sideActivities && data.sideActivities.length > 0)
+    });
   }
 
   getPrincipalIE(registrations) {
@@ -1468,6 +1540,8 @@ class UIManager {
     this.elements.errorMessage.textContent = message;
     this.elements.errorMessage.classList.remove("hidden");
     this.elements.errorMessage.focus();
+    
+    Telemetry.trackEvent('error_displayed', { message: message });
   }
 
   clearError() {
@@ -1512,6 +1586,8 @@ class UIManager {
     if (tabName === 'exportar') {
       this.loadExportHistory();
     }
+
+    Telemetry.trackEvent('tab_switched', { tab: tabName });
   }
 
   toggleTheme() {
