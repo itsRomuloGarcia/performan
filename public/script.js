@@ -554,12 +554,58 @@ class Formatters {
 }
 
 // =============================================
+// MONITORAMENTO E TELEMETRIA
+// =============================================
+class Telemetry {
+  static trackEvent(eventName, properties = {}) {
+    if (typeof gtag !== 'undefined') {
+      gtag('event', eventName, properties);
+    }
+    
+    // Log para desenvolvimento
+    if (process.env.NODE_ENV === 'development') {
+      console.log('📊 Evento:', eventName, properties);
+    }
+  }
+
+  static trackSearch(cnpj, success, duration, error = null) {
+    this.trackEvent('cnpj_search', {
+      cnpj_length: cnpj.length,
+      success: success,
+      duration: duration,
+      error_type: error?.name || null
+    });
+  }
+
+  static trackExport(format, itemCount) {
+    this.trackEvent('export_data', {
+      format: format,
+      item_count: itemCount
+    });
+  }
+
+  static trackError(error, context = {}) {
+    this.trackEvent('error_occurred', {
+      error_name: error.name,
+      error_message: error.message,
+      ...context
+    });
+    
+    // Reportar erro para serviço externo se disponível
+    if (typeof window.Sentry !== 'undefined') {
+      window.Sentry.captureException(error, { extra: context });
+    }
+  }
+}
+
+// =============================================
 // GERENCIADOR DE UI
 // =============================================
 class UIManager {
   constructor() {
     this.elements = this.initializeElements();
     this.bindEvents();
+    this.initializeTelemetry();
   }
 
   initializeElements() {
@@ -637,6 +683,16 @@ class UIManager {
 
     // Carregar histórico de exportação
     this.loadExportHistory();
+  }
+
+  initializeTelemetry() {
+    // Inicializar analytics se disponível
+    if (typeof gtag !== 'undefined') {
+      Telemetry.trackEvent('page_view', {
+        page_title: document.title,
+        page_location: window.location.href
+      });
+    }
   }
 
   // =============================================
@@ -730,102 +786,107 @@ class UIManager {
       appState.deselectAllExport();
       this.loadExportHistory();
       this.showNotification('Todas as pesquisas foram removidas', 'success');
+      Telemetry.trackEvent('history_cleared');
     }
   }
 
   async handleExport(format) {
-  const history = SearchHistoryManager.getHistoryList();
-  const selections = appState.getSelectedExports(history);
-  
-  if (selections.length === 0) {
-    this.showNotification('Selecione pelo menos uma pesquisa para exportar', 'error');
-    return;
-  }
-
-  try {
-    // Para Excel, precisamos da biblioteca SheetJS
-    if (format === 'excel') {
-      try {
-        await this.loadSheetJS();
-      } catch (error) {
-        console.error('Erro ao carregar SheetJS:', error);
-        this.showNotification('Erro ao carregar biblioteca Excel. Usando CSV como alternativa.', 'warning');
-        // Fallback para CSV
-        format = 'csv';
-      }
-    }
-
-    let content, filename, mimeType;
-
-    switch (format) {
-      case 'excel':
-        if (typeof XLSX === 'undefined') {
-          throw new Error('Biblioteca Excel não disponível');
-        }
-        
-        const excelBuffer = await ExportManager.exportToExcel(selections);
-        if (excelBuffer && (excelBuffer instanceof ArrayBuffer || excelBuffer instanceof Uint8Array)) {
-          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.xlsx`;
-          ExportManager.downloadExcelFile(excelBuffer, filename);
-          this.showNotification('Arquivo Excel baixado com sucesso!', 'success');
-        } else {
-          throw new Error('Falha ao gerar arquivo Excel');
-        }
-        break;
-          
-      case 'csv':
-        content = ExportManager.exportToCSV(selections);
-        filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
-        mimeType = 'text/csv';
-        ExportManager.downloadFile(content, filename, mimeType);
-        this.showNotification('Arquivo CSV baixado com sucesso!', 'success');
-        break;
-          
-      case 'json':
-        content = ExportManager.exportToJSON(selections);
-        filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.json`;
-        mimeType = 'application/json';
-        ExportManager.downloadFile(content, filename, mimeType);
-        this.showNotification('Arquivo JSON baixado com sucesso!', 'success');
-        break;
-    }
+    const startTime = Date.now();
+    const history = SearchHistoryManager.getHistoryList();
+    const selections = appState.getSelectedExports(history);
     
-  } catch (error) {
-    console.error('Erro na exportação:', error);
-    
-    if (format === 'excel') {
-      // Tentar fallback para CSV se o Excel falhar
-      this.showNotification('Erro ao exportar Excel. Tentando CSV...', 'warning');
-      setTimeout(() => this.handleExport('csv'), 1000);
-    } else {
-      this.showNotification(`Erro ao exportar arquivo ${format.toUpperCase()}`, 'error');
-    }
-  }
-}
-
-  async loadSheetJS() {
-  return new Promise((resolve, reject) => {
-    if (typeof XLSX !== 'undefined') {
-      resolve();
+    if (selections.length === 0) {
+      this.showNotification('Selecione pelo menos uma pesquisa para exportar', 'error');
       return;
     }
 
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-    script.onload = () => {
-      console.log('✅ SheetJS carregado com sucesso');
-      resolve();
-    };
-    script.onerror = () => {
-      console.error('❌ Erro ao carregar SheetJS');
-      reject(new Error('Falha ao carregar biblioteca Excel'));
-    };
-    document.head.appendChild(script);
-  });
-}
+    try {
+      // Para Excel, precisamos da biblioteca SheetJS
+      if (format === 'excel') {
+        try {
+          await this.loadSheetJS();
+        } catch (error) {
+          console.error('Erro ao carregar SheetJS:', error);
+          this.showNotification('Erro ao carregar biblioteca Excel. Usando CSV como alternativa.', 'warning');
+          // Fallback para CSV
+          format = 'csv';
+        }
+      }
+
+      let content, filename, mimeType;
+
+      switch (format) {
+        case 'excel':
+          if (typeof XLSX === 'undefined') {
+            throw new Error('Biblioteca Excel não disponível');
+          }
+          
+          const excelBuffer = await ExportManager.exportToExcel(selections);
+          if (excelBuffer && (excelBuffer instanceof ArrayBuffer || excelBuffer instanceof Uint8Array)) {
+            filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.xlsx`;
+            ExportManager.downloadExcelFile(excelBuffer, filename);
+            this.showNotification('Arquivo Excel baixado com sucesso!', 'success');
+          } else {
+            throw new Error('Falha ao gerar arquivo Excel');
+          }
+          break;
+            
+        case 'csv':
+          content = ExportManager.exportToCSV(selections);
+          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
+          mimeType = 'text/csv';
+          ExportManager.downloadFile(content, filename, mimeType);
+          this.showNotification('Arquivo CSV baixado com sucesso!', 'success');
+          break;
+            
+        case 'json':
+          content = ExportManager.exportToJSON(selections);
+          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.json`;
+          mimeType = 'application/json';
+          ExportManager.downloadFile(content, filename, mimeType);
+          this.showNotification('Arquivo JSON baixado com sucesso!', 'success');
+          break;
+      }
+      
+      const duration = Date.now() - startTime;
+      Telemetry.trackExport(format, selections.length);
+      
+    } catch (error) {
+      console.error('Erro na exportação:', error);
+      Telemetry.trackError(error, { action: 'export', format: format });
+      
+      if (format === 'excel') {
+        // Tentar fallback para CSV se o Excel falhar
+        this.showNotification('Erro ao exportar Excel. Tentando CSV...', 'warning');
+        setTimeout(() => this.handleExport('csv'), 1000);
+      } else {
+        this.showNotification(`Erro ao exportar arquivo ${format.toUpperCase()}`, 'error');
+      }
+    }
+  }
+
+  async loadSheetJS() {
+    return new Promise((resolve, reject) => {
+      if (typeof XLSX !== 'undefined') {
+        resolve();
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      script.onload = () => {
+        console.log('✅ SheetJS carregado com sucesso');
+        resolve();
+      };
+      script.onerror = () => {
+        console.error('❌ Erro ao carregar SheetJS');
+        reject(new Error('Falha ao carregar biblioteca Excel'));
+      };
+      document.head.appendChild(script);
+    });
+  }
 
   showNotification(message, type = 'info') {
-    // Implementação simples de notificação
     const notification = document.createElement('div');
     notification.className = `notification notification-${type}`;
     notification.textContent = message;
@@ -886,6 +947,7 @@ class UIManager {
 
   async handleSearch() {
     const cnpjValue = this.elements.cnpjInput.value;
+    const startTime = Date.now();
     
     this.clearError();
     this.hideResult();
@@ -894,13 +956,14 @@ class UIManager {
     
     if (!validation.isValid) {
       this.showError(validation.error);
+      Telemetry.trackEvent('validation_error', { error: validation.error });
       return;
     }
 
-    await this.searchCNPJ(validation.cleaned);
+    await this.searchCNPJ(validation.cleaned, startTime);
   }
 
-  async searchCNPJ(cnpj) {
+  async searchCNPJ(cnpj, startTime) {
     this.showLoading();
     this.disableSearchButton(true);
     appState.setLoading(true);
@@ -921,15 +984,21 @@ class UIManager {
       // Atualizar a aba de exportação se estiver visível
       this.loadExportHistory();
       
+      const duration = Date.now() - startTime;
+      Telemetry.trackSearch(cnpj, true, duration);
+      
     } catch (error) {
       console.error("💥 Erro na consulta:", error);
+      
+      const duration = Date.now() - startTime;
+      Telemetry.trackSearch(cnpj, false, duration, error);
       
       if (appState.retryCount < CONFIG.MAX_RETRIES) {
         appState.retryCount++;
         console.log(`🔄 Tentativa ${appState.retryCount} de ${CONFIG.MAX_RETRIES}`);
         
         await this.delay(CONFIG.RETRY_DELAY);
-        return this.searchCNPJ(cnpj);
+        return this.searchCNPJ(cnpj, startTime);
       }
       
       this.showError(this.getErrorMessage(error));
@@ -1454,10 +1523,12 @@ class UIManager {
       body.classList.remove("dark-mode");
       themeIcon.textContent = "🌙";
       appState.setTheme("light");
+      Telemetry.trackEvent('theme_changed', { theme: 'light' });
     } else {
       body.classList.add("dark-mode");
       themeIcon.textContent = "☀️";
       appState.setTheme("dark");
+      Telemetry.trackEvent('theme_changed', { theme: 'dark' });
     }
 
     this.announceToScreenReader(`Modo ${isDarkMode ? 'claro' : 'escuro'} ativado`);
