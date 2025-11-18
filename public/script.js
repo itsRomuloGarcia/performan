@@ -734,76 +734,95 @@ class UIManager {
   }
 
   async handleExport(format) {
-    const history = SearchHistoryManager.getHistoryList();
-    const selections = appState.getSelectedExports(history);
+  const history = SearchHistoryManager.getHistoryList();
+  const selections = appState.getSelectedExports(history);
+  
+  if (selections.length === 0) {
+    this.showNotification('Selecione pelo menos uma pesquisa para exportar', 'error');
+    return;
+  }
+
+  try {
+    // Para Excel, precisamos da biblioteca SheetJS
+    if (format === 'excel') {
+      try {
+        await this.loadSheetJS();
+      } catch (error) {
+        console.error('Erro ao carregar SheetJS:', error);
+        this.showNotification('Erro ao carregar biblioteca Excel. Usando CSV como alternativa.', 'warning');
+        // Fallback para CSV
+        format = 'csv';
+      }
+    }
+
+    let content, filename, mimeType;
+
+    switch (format) {
+      case 'excel':
+        if (typeof XLSX === 'undefined') {
+          throw new Error('Biblioteca Excel não disponível');
+        }
+        
+        const excelBuffer = await ExportManager.exportToExcel(selections);
+        if (excelBuffer && (excelBuffer instanceof ArrayBuffer || excelBuffer instanceof Uint8Array)) {
+          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.xlsx`;
+          ExportManager.downloadExcelFile(excelBuffer, filename);
+          this.showNotification('Arquivo Excel baixado com sucesso!', 'success');
+        } else {
+          throw new Error('Falha ao gerar arquivo Excel');
+        }
+        break;
+          
+      case 'csv':
+        content = ExportManager.exportToCSV(selections);
+        filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
+        mimeType = 'text/csv';
+        ExportManager.downloadFile(content, filename, mimeType);
+        this.showNotification('Arquivo CSV baixado com sucesso!', 'success');
+        break;
+          
+      case 'json':
+        content = ExportManager.exportToJSON(selections);
+        filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.json`;
+        mimeType = 'application/json';
+        ExportManager.downloadFile(content, filename, mimeType);
+        this.showNotification('Arquivo JSON baixado com sucesso!', 'success');
+        break;
+    }
     
-    if (selections.length === 0) {
-      this.showNotification('Selecione pelo menos uma pesquisa para exportar', 'error');
+  } catch (error) {
+    console.error('Erro na exportação:', error);
+    
+    if (format === 'excel') {
+      // Tentar fallback para CSV se o Excel falhar
+      this.showNotification('Erro ao exportar Excel. Tentando CSV...', 'warning');
+      setTimeout(() => this.handleExport('csv'), 1000);
+    } else {
+      this.showNotification(`Erro ao exportar arquivo ${format.toUpperCase()}`, 'error');
+    }
+  }
+}
+
+  async loadSheetJS() {
+  return new Promise((resolve, reject) => {
+    if (typeof XLSX !== 'undefined') {
+      resolve();
       return;
     }
 
-    try {
-      let content, filename, mimeType;
-
-      switch (format) {
-        case 'excel':
-          // Carregar a biblioteca SheetJS dinamicamente
-          if (typeof XLSX === 'undefined') {
-            await this.loadSheetJS();
-          }
-          
-          const excelBuffer = await ExportManager.exportToExcel(selections);
-          if (excelBuffer instanceof ArrayBuffer || excelBuffer instanceof Uint8Array) {
-            filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.xlsx`;
-            ExportManager.downloadExcelFile(excelBuffer, filename);
-          } else {
-            // Fallback para CSV se não for ArrayBuffer
-            content = excelBuffer;
-            filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
-            mimeType = 'text/csv';
-            ExportManager.downloadFile(content, filename, mimeType);
-          }
-          break;
-          
-        case 'csv':
-          content = ExportManager.exportToCSV(selections);
-          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
-          mimeType = 'text/csv';
-          ExportManager.downloadFile(content, filename, mimeType);
-          break;
-          
-        case 'json':
-          content = ExportManager.exportToJSON(selections);
-          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.json`;
-          mimeType = 'application/json';
-          ExportManager.downloadFile(content, filename, mimeType);
-          break;
-      }
-
-      this.showNotification(`Arquivo ${format.toUpperCase()} baixado com sucesso!`, 'success');
-      
-    } catch (error) {
-      console.error('Erro na exportação:', error);
-      this.showNotification('Erro ao exportar arquivo', 'error');
-    }
-  }
-
-  async loadSheetJS() {
-    return new Promise((resolve, reject) => {
-      if (typeof XLSX !== 'undefined') {
-        resolve();
-        return;
-      }
-
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-      script.integrity = 'sha512-1gMqHTdXchdzj4Dp6CuK6w2kE3kUDm5+8sKjD1lyj+mc3JT6C6kKvNVCdA6vEGJQ9jgs29+7Vk6q0e0x1ZxtCw==';
-      script.crossOrigin = 'anonymous';
-      script.onload = resolve;
-      script.onerror = reject;
-      document.head.appendChild(script);
-    });
-  }
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    script.onload = () => {
+      console.log('✅ SheetJS carregado com sucesso');
+      resolve();
+    };
+    script.onerror = () => {
+      console.error('❌ Erro ao carregar SheetJS');
+      reject(new Error('Falha ao carregar biblioteca Excel'));
+    };
+    document.head.appendChild(script);
+  });
+}
 
   showNotification(message, type = 'info') {
     // Implementação simples de notificação
