@@ -145,7 +145,7 @@ class SearchHistoryManager {
 }
 
 // =============================================
-// GERENCIADOR DE EXPORTAÇÃO
+// GERENCIADOR DE EXPORTAÇÃO ATUALIZADO
 // =============================================
 class ExportManager {
   static exportToCSV(selections) {
@@ -153,21 +153,48 @@ class ExportManager {
 
     const headers = [
       'CNPJ', 'Razão Social', 'Nome Fantasia', 'Situação Cadastral', 
-      'Data Abertura', 'Endereço', 'Telefone', 'Email', 'CNAE Principal'
+      'Data Abertura', 'Endereço Completo', 'Telefone', 'Email',
+      'Inscrição Estadual', 'CNAE Principal', 'Código CNAE', 'Porte Empresa',
+      'Natureza Jurídica', 'Capital Social', 'Data Situação Cadastral',
+      'Matriz/Filial', 'Regime Simples', 'Data Opção Simples', 'MEI',
+      'Data Opção MEI', 'Logradouro', 'Número', 'Complemento', 'Bairro',
+      'Cidade', 'Estado', 'CEP', 'País'
     ];
 
     const rows = selections.map(item => {
       const data = item.data;
+      const iePrincipal = this.getPrincipalIE(data.registrations);
+      const capitalSocial = data.company?.equity ? `R$ ${Formatters.currency(data.company.equity)}` : '';
+      
       return [
         data.taxId || '',
         data.company?.name || '',
         data.alias || '',
         data.status?.text || '',
-        data.founded || '',
+        Formatters.date(data.founded) || '',
         this.formatAddress(data.address) || '',
         this.formatPhones(data.phones) || '',
         this.getPrimaryEmail(data.emails) || '',
-        data.mainActivity?.text || ''
+        iePrincipal || '',
+        data.mainActivity?.text || '',
+        data.mainActivity?.id || '',
+        data.company?.size?.text || '',
+        data.company?.nature?.text || '',
+        capitalSocial,
+        Formatters.date(data.statusDate) || '',
+        data.head ? 'Matriz' : 'Filial',
+        data.company?.simples?.optant ? 'SIM' : 'NÃO',
+        Formatters.date(data.company?.simples?.since) || '',
+        data.company?.simei?.optant ? 'SIM' : 'NÃO',
+        Formatters.date(data.company?.simei?.since) || '',
+        data.address?.street || '',
+        data.address?.number || '',
+        data.address?.details || '',
+        data.address?.district || '',
+        data.address?.city || '',
+        data.address?.state || '',
+        Formatters.CEP(data.address?.zip) || '',
+        data.address?.country?.name || ''
       ].map(field => `"${field}"`).join(',');
     });
 
@@ -182,6 +209,7 @@ class ExportManager {
       selections: selections.map(item => ({
         cnpj: item.cnpj,
         company_name: item.data.company?.name,
+        timestamp: item.timestamp,
         exported_at: new Date().toISOString()
       })),
       data: selections.reduce((acc, item) => {
@@ -193,14 +221,128 @@ class ExportManager {
     return JSON.stringify(exportData, null, 2);
   }
 
-  static exportToExcel(selections) {
-    // Para Excel, usaremos CSV com extensão .xls para simplicidade
-    // Em uma implementação real, usaria uma biblioteca como SheetJS
-    return this.exportToCSV(selections);
+  static async exportToExcel(selections) {
+    if (!selections || selections.length === 0) return null;
+
+    try {
+      // Criar workbook
+      const wb = XLSX.utils.book_new();
+      
+      // Dados principais
+      const mainData = selections.map(item => {
+        const data = item.data;
+        const iePrincipal = this.getPrincipalIE(data.registrations);
+        const capitalSocial = data.company?.equity ? `R$ ${Formatters.currency(data.company.equity)}` : '';
+        
+        return {
+          'CNPJ': data.taxId || '',
+          'Razão Social': data.company?.name || '',
+          'Nome Fantasia': data.alias || '',
+          'Situação Cadastral': data.status?.text || '',
+          'Data Abertura': Formatters.date(data.founded) || '',
+          'Data Situação': Formatters.date(data.statusDate) || '',
+          'Inscrição Estadual': iePrincipal || '',
+          'Porte Empresa': data.company?.size?.text || '',
+          'Natureza Jurídica': data.company?.nature?.text || '',
+          'Capital Social': capitalSocial,
+          'Matriz/Filial': data.head ? 'Matriz' : 'Filial',
+          'CNAE Principal': data.mainActivity?.text || '',
+          'Código CNAE': data.mainActivity?.id || '',
+          'Regime Simples': data.company?.simples?.optant ? 'SIM' : 'NÃO',
+          'Data Opção Simples': Formatters.date(data.company?.simples?.since) || '',
+          'MEI': data.company?.simei?.optant ? 'SIM' : 'NÃO',
+          'Data Opção MEI': Formatters.date(data.company?.simei?.since) || '',
+          'Email': this.getPrimaryEmail(data.emails) || '',
+          'Telefone': this.formatPhones(data.phones) || ''
+        };
+      });
+
+      // Dados de endereço
+      const addressData = selections.map(item => {
+        const data = item.data;
+        return {
+          'CNPJ': data.taxId || '',
+          'Razão Social': data.company?.name || '',
+          'Logradouro': data.address?.street || '',
+          'Número': data.address?.number || '',
+          'Complemento': data.address?.details || '',
+          'Bairro': data.address?.district || '',
+          'Cidade': data.address?.city || '',
+          'Estado': data.address?.state || '',
+          'CEP': Formatters.CEP(data.address?.zip) || '',
+          'País': data.address?.country?.name || '',
+          'Endereço Completo': this.formatAddress(data.address) || ''
+        };
+      });
+
+      // Dados de sócios (apenas os 3 primeiros para não ficar muito grande)
+      const partnersData = [];
+      selections.forEach(item => {
+        const data = item.data;
+        const members = data.company?.members || [];
+        
+        if (members.length > 0) {
+          members.slice(0, 3).forEach((member, index) => {
+            partnersData.push({
+              'CNPJ': data.taxId || '',
+              'Razão Social': data.company?.name || '',
+              'Nome Sócio': member.person?.name || '',
+              'Cargo': member.role?.text || '',
+              'Data Entrada': Formatters.date(member.since) || '',
+              'Faixa Etária': member.person?.age || '',
+              'Ordem': index + 1
+            });
+          });
+        } else {
+          partnersData.push({
+            'CNPJ': data.taxId || '',
+            'Razão Social': data.company?.name || '',
+            'Nome Sócio': 'Nenhum sócio encontrado',
+            'Cargo': '',
+            'Data Entrada': '',
+            'Faixa Etária': '',
+            'Ordem': 1
+          });
+        }
+      });
+
+      // Criar worksheets
+      const wsMain = XLSX.utils.json_to_sheet(mainData);
+      const wsAddress = XLSX.utils.json_to_sheet(addressData);
+      const wsPartners = XLSX.utils.json_to_sheet(partnersData);
+
+      // Adicionar worksheets ao workbook
+      XLSX.utils.book_append_sheet(wb, wsMain, "Dados Principais");
+      XLSX.utils.book_append_sheet(wb, wsAddress, "Endereços");
+      XLSX.utils.book_append_sheet(wb, wsPartners, "Sócios");
+
+      // Gerar arquivo
+      const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      return excelBuffer;
+
+    } catch (error) {
+      console.error('Erro ao gerar Excel:', error);
+      // Fallback para CSV se houver erro
+      return this.exportToCSV(selections);
+    }
   }
 
   static downloadFile(content, filename, mimeType) {
     const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  static downloadExcelFile(excelBuffer, filename) {
+    const blob = new Blob([excelBuffer], { 
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -221,7 +363,11 @@ class ExportManager {
       address.city,
       address.state
     ].filter(part => part && part.trim() !== '');
-    return parts.join(', ');
+    
+    const formattedAddress = parts.join(', ');
+    const zipCode = address.zip ? ` - CEP: ${Formatters.CEP(address.zip)}` : '';
+    
+    return formattedAddress + zipCode;
   }
 
   static formatPhones(phones) {
@@ -235,6 +381,18 @@ class ExportManager {
     if (!emails || !Array.isArray(emails) || emails.length === 0) return '';
     const corporateEmail = emails.find(email => email.ownership === 'CORPORATE');
     return (corporateEmail || emails[0])?.address || '';
+  }
+
+  static getPrincipalIE(registrations) {
+    if (!registrations || !Array.isArray(registrations)) return '';
+
+    const ieNormal = registrations.find(reg => reg.type?.id === 1);
+    if (ieNormal) return `${ieNormal.number} (${ieNormal.state})`;
+
+    const primeira = registrations[0];
+    if (primeira) return `${primeira.number} (${primeira.state})`;
+
+    return '';
   }
 }
 
@@ -575,7 +733,7 @@ class UIManager {
     }
   }
 
-  handleExport(format) {
+  async handleExport(format) {
     const history = SearchHistoryManager.getHistoryList();
     const selections = appState.getSelectedExports(history);
     
@@ -589,29 +747,62 @@ class UIManager {
 
       switch (format) {
         case 'excel':
-          content = ExportManager.exportToExcel(selections);
-          filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.xls`;
-          mimeType = 'application/vnd.ms-excel';
+          // Carregar a biblioteca SheetJS dinamicamente
+          if (typeof XLSX === 'undefined') {
+            await this.loadSheetJS();
+          }
+          
+          const excelBuffer = await ExportManager.exportToExcel(selections);
+          if (excelBuffer instanceof ArrayBuffer || excelBuffer instanceof Uint8Array) {
+            filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.xlsx`;
+            ExportManager.downloadExcelFile(excelBuffer, filename);
+          } else {
+            // Fallback para CSV se não for ArrayBuffer
+            content = excelBuffer;
+            filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
+            mimeType = 'text/csv';
+            ExportManager.downloadFile(content, filename, mimeType);
+          }
           break;
+          
         case 'csv':
           content = ExportManager.exportToCSV(selections);
           filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.csv`;
           mimeType = 'text/csv';
+          ExportManager.downloadFile(content, filename, mimeType);
           break;
+          
         case 'json':
           content = ExportManager.exportToJSON(selections);
           filename = `cnpj_pesquisas_${new Date().toISOString().split('T')[0]}.json`;
           mimeType = 'application/json';
+          ExportManager.downloadFile(content, filename, mimeType);
           break;
       }
 
-      ExportManager.downloadFile(content, filename, mimeType);
       this.showNotification(`Arquivo ${format.toUpperCase()} baixado com sucesso!`, 'success');
       
     } catch (error) {
       console.error('Erro na exportação:', error);
       this.showNotification('Erro ao exportar arquivo', 'error');
     }
+  }
+
+  async loadSheetJS() {
+    return new Promise((resolve, reject) => {
+      if (typeof XLSX !== 'undefined') {
+        resolve();
+        return;
+      }
+
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      script.integrity = 'sha512-1gMqHTdXchdzj4Dp6CuK6w2kE3kUDm5+8sKjD1lyj+mc3JT6C6kKvNVCdA6vEGJQ9jgs29+7Vk6q0e0x1ZxtCw==';
+      script.crossOrigin = 'anonymous';
+      script.onload = resolve;
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
   }
 
   showNotification(message, type = 'info') {
@@ -629,6 +820,7 @@ class UIManager {
       border-radius: 8px;
       z-index: 1000;
       animation: slideIn 0.3s ease;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
     `;
 
     document.body.appendChild(notification);
