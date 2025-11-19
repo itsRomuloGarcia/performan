@@ -28,27 +28,17 @@
       rel="stylesheet"
     />
     
-     <!-- Favicon básico -->
-    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    
-    <!-- Favicons para diferentes dispositivos -->
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
-    
-    <!-- Apple Touch Icon -->
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-    
-    <!-- Android Chrome -->
-    <link rel="icon" type="image/png" sizes="192x192" href="/android-chrome-192x192.png">
-    <link rel="icon" type="image/png" sizes="512x512" href="/android-chrome-512x512.png">
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23c57001'><path d='M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm10 16H4V8h16v12z'/><path d='M8 10h8v2H8zM8 14h8v2H8zM8 18h5v2H8z'/></svg>">
+    <link rel="alternate icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23c57001'><path d='M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm10 16H4V8h16v12z'/><path d='M8 10h8v2H8zM8 14h8v2H8zM8 18h5v2H8z'/></svg>">
     
     <!-- Web App Manifest -->
-    <link rel="manifest" href="/site.webmanifest">
+    <link rel="manifest" href="/manifest.json">
     
-    <!-- MS Application -->
-    <meta name="msapplication-TileColor" content="#c57001">
-    <meta name="msapplication-TileImage" content="/mstile-144x144.png">
+    <!-- Theme Color -->
     <meta name="theme-color" content="#c57001">
+    <meta name="msapplication-TileColor" content="#c57001">
     
     <!-- Preload critical resources -->
     <link rel="preload" href="style.css" as="style" />
@@ -68,18 +58,18 @@
             <span class="theme-icon" aria-hidden="true">🌙</span>
           </button>
         </div>
-        <p>Busque por CNPJ e obtenha informações oficiais da Receita Federal de forma rápida, prática e confiável</p>
+        <p>Busque por CNPJ e obtenha informações oficiais da Receita Federal de forma rápida, prática e confiável.</p>
       </header>
 
       <main class="main" role="main">
         <section class="search-section" aria-labelledby="search-title">
-          <h2 id="search-title" class="sr-only">Solução de consulta completa de CNPJ</h2>
+          <h2 id="search-title" class="sr-only">Consulta de CNPJ</h2>
           
           <div class="input-group">
             <input
               type="text"
               id="cnpjInput"
-              placeholder="Digite ou cole o CNPJ"
+              placeholder="Digite ou cole CNPJ"
               maxlength="18"
               autocomplete="off"
               aria-describedby="cnpjHelp"
@@ -124,19 +114,9 @@
           <div class="tabs" role="tablist" aria-label="Tipos de informação da empresa">
             <button 
               class="tab-button active" 
-              data-tab="principal"
-              role="tab"
-              aria-selected="true"
-              aria-controls="tab-principal"
-              id="tab-btn-principal"
-            >
-              Informações Principais
-            </button>
-            <button 
-              class="tab-button" 
               data-tab="completo"
               role="tab"
-              aria-selected="false"
+              aria-selected="true"
               aria-controls="tab-completo"
               id="tab-btn-completo"
             >
@@ -155,52 +135,17 @@
           </div>
 
           <div class="tab-content">
-            <!-- ABA PRINCIPAL -->
+            <!-- ABA COMPLETA -->
             <div 
-              id="tab-principal" 
+              id="tab-completo" 
               class="tab-pane active"
               role="tabpanel"
-              aria-labelledby="tab-btn-principal"
+              aria-labelledby="tab-btn-completo"
             >
-              <div class="card company-card">
-                <h2>Dados da Empresa</h2>
-                <div class="info-grid">
-                  <div class="info-item">
-                    <span class="label">Razão Social:</span>
-                    <span id="companyName" class="value">-</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Nome Fantasia:</span>
-                    <span id="tradeName" class="value">-</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">CNPJ:</span>
-                    <span id="cnpj" class="value">-</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Inscrição Estadual:</span>
-                    <span id="ie" class="value">-</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Situação Cadastral:</span>
-                    <span id="status" class="value status-active">-</span>
-                  </div>
-                  <div class="info-item full-width">
-                    <span class="label">Endereço:</span>
-                    <span id="address" class="value">-</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">CNAE Principal:</span>
-                    <span id="cnae" class="value">-</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Telefones:</span>
-                    <span id="phones" class="value">-</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">E-mail:</span>
-                    <span id="email" class="value">-</span>
-                  </div>
+              <div class="card">
+                <h2>Dados Cadastrais Completos</h2>
+                <div class="info-grid" id="completeData">
+                  <!-- Dados completos serão inseridos aqui dinamicamente -->
                 </div>
               </div>
 
@@ -212,22 +157,7 @@
               </div>
             </div>
 
-            <!-- ABA COMPLETA -->
-            <div 
-              id="tab-completo" 
-              class="tab-pane"
-              role="tabpanel"
-              aria-labelledby="tab-btn-completo"
-            >
-              <div class="card">
-                <h2>Dados Cadastrais Completos</h2>
-                <div class="info-grid" id="completeData">
-                  <!-- Dados completos serão inseridos aqui dinamicamente -->
-                </div>
-              </div>
-            </div>
-
-            <!-- NOVA ABA: EXPORTAR PESQUISAS -->
+            <!-- ABA: EXPORTAR PESQUISAS -->
             <div 
               id="tab-exportar" 
               class="tab-pane"
@@ -280,14 +210,13 @@
         </div>
       </main>
 
-      <!-- Footer Atualizado -->
+      <!-- Footer -->
       <footer class="footer" role="contentinfo">
         <div class="footer-container">
           <div class="footer-content">
             <div class="footer-info">
               <div class="footer-brand">
                 <div class="logo">
-                  <!-- Ícone do CNPJ Finder (não mais do GitHub) -->
                   <svg
                     width="24"
                     height="24"
@@ -295,7 +224,6 @@
                     fill="currentColor"
                     aria-hidden="true"
                   >
-                    <!-- Ícone personalizado para CNPJ Finder -->
                     <path
                       d="M20 6h-4V4c0-1.1-.9-2-2-2h-4c-1.1 0-2 .9-2 2v2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zM10 4h4v2h-4V4zm10 16H4V8h16v12z"
                     />
@@ -365,8 +293,3 @@
     <script src="script.js" defer></script>
   </body>
 </html>
-
-
-
-
-
